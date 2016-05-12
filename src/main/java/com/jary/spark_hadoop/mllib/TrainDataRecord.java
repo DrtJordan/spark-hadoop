@@ -24,6 +24,7 @@ import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 
+import cn.hadoop.spark_hadoop.util.MLConstants;
 import scala.Tuple2;
 
 public class TrainDataRecord implements Serializable{
@@ -168,13 +169,20 @@ public class TrainDataRecord implements Serializable{
 		}
 	}*/
 	public static void main(String[] args) {
+//		args = new String[2];
+//		args[0] = "/tmp/spark/20160519/Reduced/*";
+//		args[1] = "/tmp/spark/20160519/train/";
 		if(args.length < 2){
 			System.err.println("Usage: TrainDataRecord <trainPath> <savePath>");
 			System.exit(1);
 		}
 		String trainPath = args[0];
 		String savePath = args[1];
+//		//设置每个worker任务执行使用内存
+//		System.setProperty("spark.executor.memory", "3g");
+		
 		SparkConf sparkConf = new SparkConf().setAppName("TrainDataRecord");
+//		sparkConf.setMaster("spark://master1:7077");
 		JavaSparkContext jsc = new JavaSparkContext(sparkConf);
 		SQLContext sqlContext = new SQLContext(jsc);
 		
@@ -211,10 +219,9 @@ public class TrainDataRecord implements Serializable{
 				.setOutputCol("words");
 		DataFrame wordsData = tokenizer.transform(sentenceData);
 		
-		int numFeatures = 50000;
 		//计算每个词的TF-IDF
 		HashingTF hashingTF = new HashingTF().setInputCol("words")
-				.setOutputCol("rawFeatures").setNumFeatures(numFeatures);
+				.setOutputCol("rawFeatures").setNumFeatures(MLConstants.NUM_FEATURES);
 		DataFrame featurizedData = hashingTF.transform(wordsData);
 		Row[] words = featurizedData.select("label", "words", "rawFeatures").take(100);
 		System.out.println("当前分词，词频排行：");

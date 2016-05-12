@@ -6,15 +6,12 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.log4j.Logger;
@@ -45,8 +42,10 @@ import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.StorageLevel;
 
-import breeze.linalg.Options.Value;
-import parquet.org.apache.thrift.protocol.TMap;
+import cn.hadoop.spark_hadoop.domain.Category;
+import cn.hadoop.spark_hadoop.util.CategoryUtil;
+import cn.hadoop.spark_hadoop.util.MLConstants;
+import cn.hadoop.spark_hadoop.util.StringUtil;
 import scala.Tuple2;
 /**
  * 批量文章分类
@@ -61,6 +60,17 @@ public class BatchTextClassification {
 	private static final String SEPARATOR_NL = System.getProperty("line.separator");
 	
 	private static final Map<String,Integer> lineCountMap = new ConcurrentHashMap<String,Integer>();
+	
+	private static Map<Integer, String> categoryMap = new ConcurrentHashMap<Integer, String>();
+	
+	static {
+		List<Category> list = CategoryUtil.getCategoryList();
+		if (list!=null && list.size()>0) {
+			for (Category category : list) {
+				categoryMap.put(category.getId(), category.getTypeName());
+			}
+		}
+	}
 	
 	public static void main(String[] args) {
 		if(args.length < 3){
@@ -128,16 +138,24 @@ public class BatchTextClassification {
 		    //根据类型排序，然后输出
 		    List<String> keyList = new ArrayList<String>();
 		    Map<Integer, Integer> disturb = new HashMap<Integer, Integer>();
+		    Map<Integer, Integer> correctMap = new HashMap<Integer, Integer>();
+		    Map<Integer, Integer> countMap = new HashMap<Integer, Integer>();
 		    keyList.addAll(resultMap.keySet());
 		    Collections.sort(keyList);
 		    for (String key : keyList) {
 		    	Integer count = lineCountMap.get(key);
 		    	String[] s = key.split("/");
-				double num = Double.parseDouble(s[s.length - 2].substring(1));
+		    	Integer num = Integer.parseInt(s[s.length - 2].substring(1));
 				Integer[] value = resultMap.get(key);
-		    	if(value[0] == num){
+		    	if(num.equals(value[0])){//命中次数
 		    		correct++;
-		    	} else {
+		    		Integer countTmp2 = correctMap.get(num);
+		    		if (countTmp2==null) {
+		    			countTmp2 = 0;
+					}
+		    		countTmp2++;
+		    		correctMap.put(num, countTmp2);
+		    	} else {//统计干扰次数
 		    		Integer countTmp = disturb.get(value[0]);
 		    		if (countTmp==null) {
 		    			countTmp = 0;
@@ -145,6 +163,12 @@ public class BatchTextClassification {
 		    		countTmp++;
 		    		disturb.put(value[0], countTmp);
 				}
+		    	Integer cateNum = countMap.get(num);
+	    		if (cateNum==null) {
+	    			cateNum = 0;
+				}
+	    		cateNum++;
+	    		countMap.put(num, cateNum);
 		    	writer.write(key + " cate:" + value[0] + " hits:" + value[1] + " count:" + count + "  hitRate:"+ ((value[1]+0.0) / count) + SEPARATOR_NL);
 			}
 		    
@@ -157,9 +181,24 @@ public class BatchTextClassification {
 //		    	}
 //		    	writer.write(entry.getKey() + " cate:" + entry.getValue()[0] + " hits:" + entry.getValue()[1] + " count:" + count + "  hitRate:"+ ((entry.getValue()[1]+0.0) / count) + SEPARATOR_NL);
 //			}
-		    writer.write("匹配数："+correct+" 总数："+resultMap.size()+" 准确率："+(correct / resultMap.size()) + SEPARATOR_NL);
-		    for (Map.Entry<Integer, Integer> entry : disturb.entrySet()) {
-		    	writer.write("cate:" + entry.getKey() + " count:" + entry.getValue() + SEPARATOR_NL);
+		    writer.write("匹配数："+correct+" 总数："+resultMap.size()+" 准确率："+(correct * 100.0 / resultMap.size()) + "%" + SEPARATOR_NL);
+		    
+		    //将Map转化为List集合，List采用ArrayList  
+//	        List<Map.Entry<Integer, Integer>> list_Data = new ArrayList<Map.Entry<Integer, Integer>>(disturb.entrySet());  
+//	        for (Entry<Integer, Integer> entry : list_Data) {
+//		    	writer.write("cate:" + entry.getKey() + " count:" + entry.getValue() + SEPARATOR_NL);
+//			}
+
+	        List<Map.Entry<Integer, Integer>> list_Data = new ArrayList<Map.Entry<Integer, Integer>>(correctMap.entrySet());  
+	        //通过Collections.sort(List I,Comparator c)方法进行排序  
+	        Collections.sort(list_Data, new Comparator<Map.Entry<Integer, Integer>>() {
+	            @Override  
+	            public int compare(Entry<Integer, Integer> o1, Entry<Integer, Integer> o2) {  
+	                return (o2.getValue() - o1.getValue());  
+	            }  
+	        });
+	        for (Entry<Integer, Integer> entry : list_Data) {
+		    	writer.write("分类名：" + StringUtil.append2length(categoryMap.get(entry.getKey()), 6, "  ")  + " 分类号:" + StringUtil.append2length(entry.getKey()+"", 10, " ") + "正确个数:" + entry.getValue() + "    干扰个数:" + ( disturb.get(entry.getKey())==null? 0:disturb.get(entry.getKey()) ) + "   准确率：" + (entry.getValue() * 100.0 / countMap.get(entry.getKey())) + "%" + SEPARATOR_NL);
 			}
 			writer.flush();
 			writer.close();
@@ -257,9 +296,8 @@ public class BatchTextClassification {
 				.setOutputCol("words");
 		DataFrame wordsData = tokenizer.transform(sentenceData);
 		
-		int numFeatures = 50000;
 		HashingTF hashingTF = new HashingTF().setInputCol("words")
-				.setOutputCol("rawFeatures").setNumFeatures(numFeatures);
+				.setOutputCol("rawFeatures").setNumFeatures(MLConstants.NUM_FEATURES);
 		DataFrame featurizedData = hashingTF.transform(wordsData);
 		IDF idf = new IDF().setInputCol("rawFeatures").setOutputCol("features");
 		IDFModel idfModel = idf.fit(featurizedData);
